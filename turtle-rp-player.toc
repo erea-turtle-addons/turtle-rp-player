@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: RP Player
+## Notes: Addon pour les Joueurs - Inventaire d'objets de quête RP
+## Author: Votre Nom
+## Version: artifact_v20
+## SavedVariablesPerCharacter: RPPlayerDB, RPPlayerDebugLog
+
+RPPlayer.lua
