@@ -3,11 +3,23 @@
 
 local ADDON_NAME = "RPPlayer"
 local ADDON_PREFIX = "RPMSTR"
-local ADDON_VERSION = "2025-12-07 21:40"
+local ADDON_VERSION = "2025-12-09 15:20"
 local MAX_SLOTS = 16
 
 -- Note: RegisterAddonMessagePrefix() doesn't exist in WoW 1.12
 -- Addon messages work without registration in Vanilla
+
+-- Pending GIVE requests (from GM)
+RPPlayer_PendingGiveItem = nil
+RPPlayer_PendingGiveSender = nil
+RPPlayer_PendingGiveMessage = nil
+
+-- Pending TRADE requests (from other players)
+RPPlayer_PendingTradeItem = nil
+RPPlayer_PendingTradeSender = nil
+
+-- Pending outgoing TRADE (waiting for acceptance)
+RPPlayer_PendingOutgoingTrade = nil
 
 -- Debug logging system
 RPPlayerDebugLog = RPPlayerDebugLog or {}
@@ -101,6 +113,23 @@ local function Base64Encode(data)
     end
 
     return table.concat(result)
+end
+
+-- Helper function to determine distribution channel
+function GetDistribution(targetName)
+    local distribution = nil
+    local whisperTarget = nil
+
+    if GetNumRaidMembers() > 0 then
+        distribution = "RAID"
+    elseif GetNumPartyMembers() > 0 then
+        distribution = "PARTY"
+    else
+        distribution = "WHISPER"
+        whisperTarget = targetName
+    end
+
+    return distribution, whisperTarget
 end
 
 -- Initialize saved variables (per character)
@@ -214,7 +243,6 @@ end
 
 -- Item reading frame (for letters/documents)
 local readFrame = CreateFrame("Frame", "RPReadFrame", UIParent)
-DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] Read frame created: " .. tostring(readFrame ~= nil))
 readFrame:SetWidth(450)
 readFrame:SetHeight(500)
 readFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
@@ -228,7 +256,6 @@ readFrame:SetBackdrop({
 readFrame:SetBackdropColor(0, 0, 0, 1)
 readFrame:SetMovable(true)
 readFrame:Hide()
-DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] Read frame initial hide called")
 
 -- Load saved position or use default
 if RPPlayerDB.readFramePos then
@@ -440,37 +467,16 @@ function RPPlayer_TradeItem(item, targetName)
     Log("Sending item via " .. distribution)
     SendAddonMessage("RPMSTR", data, distribution, target)
 
-    -- Remove from inventory
-    for i, invItem in ipairs(RPPlayerDB.inventory) do
-        if invItem.id == item.id and invItem.guid == item.guid then
-            table.remove(RPPlayerDB.inventory, i)
-            break
-        end
-    end
+    -- Store pending trade (will be removed on acceptance)
+    RPPlayer_PendingOutgoingTrade = item
 
-    RPPlayer_RefreshBag()
-    DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFF00FF00[RP Player]|r You gave '%s' to %s", item.name, targetName), 0, 1, 0)
-    Log("Item traded successfully via " .. distribution)
+    DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFF00FF00[RP Player]|r Offering '%s' to %s (waiting for response)...", item.name, targetName), 0, 1, 0)
+    Log("Item trade pending acceptance from " .. targetName)
 end
 
 -- Function: Read item
 -- Optional shownBy parameter indicates who showed you this item
 function RPPlayer_ReadItem(item, shownBy)
-    DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] RPPlayer_ReadItem called for: " .. item.name)
-    DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] readFrame exists: " .. tostring(readFrame ~= nil))
-    DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] readFrame type: " .. tostring(type(readFrame)))
-
-    if readFrame.IsShown then
-        DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] IsShown method exists")
-        DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] readFrame IsShown before: " .. tostring(readFrame:IsShown()))
-    else
-        DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] IsShown method does NOT exist")
-    end
-
-    if readFrame.IsVisible then
-        DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] IsVisible: " .. tostring(readFrame:IsVisible()))
-    end
-
     -- Set title based on context
     if shownBy then
         readTitle:SetText("An item shown by " .. shownBy)
@@ -500,32 +506,19 @@ function RPPlayer_ReadItem(item, shownBy)
     -- Set content text
     if item.content and item.content ~= "" then
         readText:SetText(item.content)
-        DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] Content length: " .. string.len(item.content))
     else
         readText:SetText("This item has no content to read.")
-        DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] No content, showing default message")
     end
 
     local textHeight = readText:GetHeight()
     if textHeight and textHeight > 0 then
         readScrollChild:SetHeight(textHeight)
-        DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] Text height: " .. textHeight)
     else
         -- Fallback to a reasonable default
         readScrollChild:SetHeight(400)
-        DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] Text height was nil or 0, using fallback 400")
     end
 
     readFrame:Show()
-    DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] Read frame Show() called")
-
-    if readFrame.IsShown then
-        DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] readFrame IsShown after: " .. tostring(readFrame:IsShown()))
-    end
-
-    DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] readFrame FrameStrata: " .. tostring(readFrame:GetFrameStrata()))
-    DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] readFrame GetWidth: " .. tostring(readFrame:GetWidth()))
-    DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] readFrame GetHeight: " .. tostring(readFrame:GetHeight()))
 end
 
 -- Helper function: Check if a unit is in range (approximately 28 yards, like /say)
@@ -677,12 +670,17 @@ function RPPlayer_ShowContextMenu(item, anchorFrame)
                 func = function()
                     -- Show to all players in range (iterate through the list)
                     local item = RPPlayerContextMenuFrame.contextItem
-                    local count = 0
+                    local playerNames = {}
                     for _, playerName in ipairs(RPPlayerContextMenuFrame.raidMembers) do
                         RPPlayer_ShowItem(item, playerName)
-                        count = count + 1
+                        table.insert(playerNames, playerName)
                     end
-                    DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFF00FFFF[RP Player]|r You showed '%s' to %d nearby player(s)", item.name, count), 0, 1, 1)
+                    if table.getn(playerNames) > 0 then
+                        local namesList = table.concat(playerNames, ", ")
+                        DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFF00FFFF[RP Player]|r You showed '%s' to: %s", item.name, namesList), 0, 1, 1)
+                    else
+                        DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFF00FFFF[RP Player]|r No nearby players to show '%s'", item.name), 0, 1, 1)
+                    end
                 end,
                 notCheckable = 1
             }, 2)
@@ -756,9 +754,9 @@ StaticPopupDialogs["RPPLAYER_DELETE_ITEM"] = {
 
 -- Static popup for show item request
 StaticPopupDialogs["RPPLAYER_SHOW_REQUEST"] = {
-    text = "%s wants to show you an object",
-    button1 = "Accept",
-    button2 = "Reject",
+    text = "\n|cFF00FFFF%s wants to show you %s\n",
+    button1 = "Look",
+    button2 = "Ignore",
     OnAccept = function()
         if RPPlayer_PendingShowItem then
             -- Show the read frame with the item content, including who showed it
@@ -806,6 +804,116 @@ StaticPopupDialogs["RPPLAYER_SHOW_REQUEST"] = {
     hideOnEscape = true
 }
 
+-- GIVE Request Popup (from GM) - Player finds an item
+StaticPopupDialogs["RPPLAYER_GIVE_REQUEST"] = {
+    text = "\n|cFFFFD700%s\n",
+    button1 = "Take it",
+    button2 = "Leave it",
+    OnAccept = function()
+        if RPPlayer_PendingGiveItem then
+            -- Add to inventory
+            table.insert(RPPlayerDB.inventory, RPPlayer_PendingGiveItem)
+            RPPlayer_RefreshBag()
+
+            -- Send acceptance message
+            local myName = UnitName("player")
+            local rawData = "GIVE_ACCEPT|" .. RPPlayer_PendingGiveSender .. "|" .. myName .. "|" .. RPPlayer_PendingGiveItem.name
+            local data = Base64Encode(rawData)
+
+            -- Determine distribution
+            local distribution, whisperTarget = GetDistribution(RPPlayer_PendingGiveSender)
+            SendAddonMessage("RPMSTR", data, distribution, whisperTarget)
+            Log("Sent GIVE_ACCEPT to " .. RPPlayer_PendingGiveSender .. " via " .. distribution)
+
+            -- Display message
+            DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFF00FF00[RP Player]|r You accepted '%s' from %s", RPPlayer_PendingGiveItem.name, RPPlayer_PendingGiveSender), 0, 1, 0)
+
+            -- Clear pending
+            RPPlayer_PendingGiveItem = nil
+            RPPlayer_PendingGiveSender = nil
+            RPPlayer_PendingGiveMessage = nil
+        end
+    end,
+    OnCancel = function()
+        if RPPlayer_PendingGiveSender and RPPlayer_PendingGiveItem then
+            -- Send rejection message
+            local myName = UnitName("player")
+            local rawData = "GIVE_REJECT|" .. RPPlayer_PendingGiveSender .. "|" .. myName .. "|" .. RPPlayer_PendingGiveItem.name
+            local data = Base64Encode(rawData)
+
+            -- Determine distribution
+            local distribution, whisperTarget = GetDistribution(RPPlayer_PendingGiveSender)
+            SendAddonMessage("RPMSTR", data, distribution, whisperTarget)
+            Log("Sent GIVE_REJECT to " .. RPPlayer_PendingGiveSender .. " via " .. distribution)
+
+            -- Display message
+            DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFFFF0000[RP Player]|r You declined '%s' from %s", RPPlayer_PendingGiveItem.name, RPPlayer_PendingGiveSender), 1, 0, 0)
+        end
+
+        -- Clear pending
+        RPPlayer_PendingGiveItem = nil
+        RPPlayer_PendingGiveSender = nil
+        RPPlayer_PendingGiveMessage = nil
+    end,
+    timeout = 30,
+    whileDead = true,
+    hideOnEscape = true
+}
+
+-- TRADE Request Popup (from other players)
+StaticPopupDialogs["RPPLAYER_TRADE_REQUEST"] = {
+    text = "\n|cFF00FF00%s wants to give you %s\n",
+    button1 = "Accept",
+    button2 = "Decline",
+    OnAccept = function()
+        if RPPlayer_PendingTradeItem then
+            -- Add to inventory
+            table.insert(RPPlayerDB.inventory, RPPlayer_PendingTradeItem)
+            RPPlayer_RefreshBag()
+
+            -- Send acceptance message
+            local myName = UnitName("player")
+            local rawData = "TRADE_ACCEPT|" .. RPPlayer_PendingTradeSender .. "|" .. myName .. "|" .. RPPlayer_PendingTradeItem.name
+            local data = Base64Encode(rawData)
+
+            -- Determine distribution
+            local distribution, whisperTarget = GetDistribution(RPPlayer_PendingTradeSender)
+            SendAddonMessage("RPMSTR", data, distribution, whisperTarget)
+            Log("Sent TRADE_ACCEPT to " .. RPPlayer_PendingTradeSender .. " via " .. distribution)
+
+            -- Display message
+            DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFF00FF00[RP Player]|r You accepted '%s' from %s", RPPlayer_PendingTradeItem.name, RPPlayer_PendingTradeSender), 0, 1, 0)
+
+            -- Clear pending
+            RPPlayer_PendingTradeItem = nil
+            RPPlayer_PendingTradeSender = nil
+        end
+    end,
+    OnCancel = function()
+        if RPPlayer_PendingTradeSender and RPPlayer_PendingTradeItem then
+            -- Send rejection message
+            local myName = UnitName("player")
+            local rawData = "TRADE_REJECT|" .. RPPlayer_PendingTradeSender .. "|" .. myName .. "|" .. RPPlayer_PendingTradeItem.name
+            local data = Base64Encode(rawData)
+
+            -- Determine distribution
+            local distribution, whisperTarget = GetDistribution(RPPlayer_PendingTradeSender)
+            SendAddonMessage("RPMSTR", data, distribution, whisperTarget)
+            Log("Sent TRADE_REJECT to " .. RPPlayer_PendingTradeSender .. " via " .. distribution)
+
+            -- Display message
+            DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFFFF0000[RP Player]|r You declined '%s' from %s", RPPlayer_PendingTradeItem.name, RPPlayer_PendingTradeSender), 1, 0, 0)
+        end
+
+        -- Clear pending
+        RPPlayer_PendingTradeItem = nil
+        RPPlayer_PendingTradeSender = nil
+    end,
+    timeout = 30,
+    whileDead = true,
+    hideOnEscape = true
+}
+
 -- Function: Refresh bag display
 function RPPlayer_RefreshBag()
     Log("RefreshBag called, inventory count: " .. table.getn(RPPlayerDB.inventory))
@@ -844,9 +952,7 @@ function RPPlayer_RefreshBag()
         local currentSlotName = slot.slotName
 
         -- Tooltip
-        DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] Setting OnEnter handler for slot " .. slotIndex)
         slot:SetScript("OnEnter", function(self)
-            DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] OnEnter triggered for: " .. currentItem.name)
             -- Position tooltip above-left of item slot
             GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")
             GameTooltip:ClearLines()
@@ -863,17 +969,12 @@ function RPPlayer_RefreshBag()
             GameTooltip:ClearAllPoints()
             GameTooltip:SetPoint("BOTTOMRIGHT", currentSlotName, "TOPLEFT", 10, -10)
             GameTooltip:Show()
-            DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] GameTooltip:Show() called")
         end)
-        DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] OnEnter handler set for slot " .. slotIndex)
 
-        DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] Setting OnLeave handler for slot " .. slotIndex)
         slot:SetScript("OnLeave", function()
-            DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] OnLeave triggered for slot " .. slotIndex)
             GameTooltip:Hide()
             GameTooltip:ClearAllPoints()
         end)
-        DEFAULT_CHAT_FRAME:AddMessage("[DEBUG] OnLeave handler set for slot " .. slotIndex)
 
         -- Left click: Read item (only if has content)
         -- Right click: Show context menu
@@ -940,43 +1041,89 @@ eventFrame:SetScript("OnEvent", function()
             Log("Part " .. i .. ": " .. tostring(parts[i]))
         end
 
-        if parts[1] == "GIVE" or parts[1] == "TRADE" then
-            -- Format: GIVE/TRADE|targetName|id|name|icon|tooltip|content
+        if parts[1] == "GIVE" then
+            -- Format: GIVE|targetName|id|name|icon|tooltip|content|customMessage
             local targetName = parts[2]
             local myName = UnitName("player")
 
-            Log(parts[1] .. " - Target: " .. tostring(targetName) .. ", MyName: " .. tostring(myName))
+            Log("GIVE - Target: " .. tostring(targetName) .. ", MyName: " .. tostring(myName))
 
             if targetName ~= myName then
-                Log("Message not for me")
+                Log("GIVE not for me")
                 return
             end
 
+            -- Parse item
             local item = {
                 id = tonumber(parts[3]),
-                name = parts[4],
+                name = parts[4] or "Unknown Item",
                 icon = parts[5],
                 tooltip = parts[6],
                 content = parts[7],
                 guid = string.format("%d-%s-%d", time(), sender, tonumber(parts[3]))
             }
 
-            Log("Item received - ID: " .. tostring(item.id) .. ", Name: " .. tostring(item.name) .. ", Icon: " .. tostring(item.icon))
+            local customMessage = parts[8]
+            if not customMessage or customMessage == "" then
+                customMessage = "A Game Master wants to give you an item."
+            end
 
+            Log("GIVE received - Item: " .. tostring(item.name) .. " from " .. sender)
+
+            -- Check if bag is full
             if table.getn(RPPlayerDB.inventory) >= MAX_SLOTS then
                 Log("Bag is full!")
                 DEFAULT_CHAT_FRAME:AddMessage("|cFFFF0000[RP Player]|r Your bag is full!", 1, 0, 0)
                 return
             end
 
-            table.insert(RPPlayerDB.inventory, item)
-            RPPlayer_RefreshBag()
+            -- Store pending state
+            RPPlayer_PendingGiveItem = item
+            RPPlayer_PendingGiveSender = sender
+            RPPlayer_PendingGiveMessage = customMessage
 
-            if parts[1] == "GIVE" then
-                DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFF00FF00[RP Player]|r You received: %s from %s", item.name, sender), 0, 1, 0)
-            else
-                DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFF00FF00[RP Player]|r %s gave you: %s", sender, item.name), 0, 1, 0)
+            -- Show popup
+            StaticPopup_Show("RPPLAYER_GIVE_REQUEST", customMessage)
+            Log("Showing GIVE_REQUEST popup from " .. sender)
+
+        elseif parts[1] == "TRADE" then
+            -- Format: TRADE|targetName|id|name|icon|tooltip|content
+            local targetName = parts[2]
+            local myName = UnitName("player")
+
+            Log("TRADE - Target: " .. tostring(targetName) .. ", MyName: " .. tostring(myName))
+
+            if targetName ~= myName then
+                Log("TRADE not for me")
+                return
             end
+
+            -- Parse item
+            local item = {
+                id = tonumber(parts[3]),
+                name = parts[4] or "Unknown Item",
+                icon = parts[5],
+                tooltip = parts[6],
+                content = parts[7],
+                guid = string.format("%d-%s-%d", time(), sender, tonumber(parts[3]))
+            }
+
+            Log("TRADE received - Item: " .. tostring(item.name) .. " from " .. sender)
+
+            -- Check if bag is full
+            if table.getn(RPPlayerDB.inventory) >= MAX_SLOTS then
+                Log("Bag is full!")
+                DEFAULT_CHAT_FRAME:AddMessage("|cFFFF0000[RP Player]|r Your bag is full!", 1, 0, 0)
+                return
+            end
+
+            -- Store pending state
+            RPPlayer_PendingTradeItem = item
+            RPPlayer_PendingTradeSender = sender
+
+            -- Show popup
+            StaticPopup_Show("RPPLAYER_TRADE_REQUEST", sender, item.name or "an item")
+            Log("Showing TRADE_REQUEST popup from " .. sender)
 
         elseif parts[1] == "SHOW" then
             -- Format: SHOW|targetName|id|name|icon|tooltip|content
@@ -992,7 +1139,7 @@ eventFrame:SetScript("OnEvent", function()
             -- Don't add to inventory, just display
             local item = {
                 id = tonumber(parts[3]),
-                name = parts[4],
+                name = parts[4] or "Unknown Item",
                 icon = parts[5],
                 tooltip = parts[6],
                 content = parts[7]
@@ -1005,7 +1152,7 @@ eventFrame:SetScript("OnEvent", function()
             RPPlayer_PendingShowSender = sender
 
             -- Show standard confirmation popup
-            StaticPopup_Show("RPPLAYER_SHOW_REQUEST", sender)
+            StaticPopup_Show("RPPLAYER_SHOW_REQUEST", sender, item.name or "an object")
 
         elseif parts[1] == "SHOW_REJECT" then
             -- Format: SHOW_REJECT|targetName|rejecterName|itemName
@@ -1024,6 +1171,59 @@ eventFrame:SetScript("OnEvent", function()
 
             -- Display rejection message to the shower
             DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFFFF0000[RP Player]|r %s rejected to view '%s'", rejecterName, itemName), 1, 0.5, 0)
+
+        elseif parts[1] == "TRADE_ACCEPT" then
+            -- Format: TRADE_ACCEPT|senderName|receiverName|itemName
+            local targetName = parts[2]
+            local accepterName = parts[3]
+            local itemName = parts[4]
+            local myName = UnitName("player")
+
+            -- Check if message is for me
+            if targetName ~= myName then
+                Log("TRADE_ACCEPT not for me (target: " .. tostring(targetName) .. ", me: " .. tostring(myName) .. ")")
+                return
+            end
+
+            Log("TRADE_ACCEPT received from " .. accepterName .. " for item: " .. tostring(itemName))
+
+            -- Display acceptance message
+            DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFF00FF00[RP Player]|r %s accepted your gift: '%s'", accepterName, itemName), 0, 1, 0)
+
+            -- Remove pending outgoing trade if exists
+            if RPPlayer_PendingOutgoingTrade then
+                -- Remove from inventory
+                for i, invItem in ipairs(RPPlayerDB.inventory) do
+                    if invItem.id == RPPlayer_PendingOutgoingTrade.id and invItem.guid == RPPlayer_PendingOutgoingTrade.guid then
+                        table.remove(RPPlayerDB.inventory, i)
+                        RPPlayer_RefreshBag()
+                        Log("Removed item from inventory after TRADE_ACCEPT")
+                        break
+                    end
+                end
+                RPPlayer_PendingOutgoingTrade = nil
+            end
+
+        elseif parts[1] == "TRADE_REJECT" then
+            -- Format: TRADE_REJECT|senderName|receiverName|itemName
+            local targetName = parts[2]
+            local rejecterName = parts[3]
+            local itemName = parts[4]
+            local myName = UnitName("player")
+
+            -- Check if message is for me
+            if targetName ~= myName then
+                Log("TRADE_REJECT not for me (target: " .. tostring(targetName) .. ", me: " .. tostring(myName) .. ")")
+                return
+            end
+
+            Log("TRADE_REJECT received from " .. rejecterName .. " for item: " .. tostring(itemName))
+
+            -- Display rejection message
+            DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFFFF0000[RP Player]|r %s declined your gift: '%s'", rejecterName, itemName), 1, 0.5, 0)
+
+            -- Clear pending outgoing trade (item stays in inventory)
+            RPPlayer_PendingOutgoingTrade = nil
         end
 
     elseif event == "PLAYER_LOGIN" then
