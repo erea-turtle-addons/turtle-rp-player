@@ -2,7 +2,7 @@
 ## Title: RP Player
 ## Notes: Player addon for managing RP quest items inventory
 ## Author: Erea
-## Version: 1.2.7
+## Version: 1.3.0
 ## SavedVariablesPerCharacter: RPPlayerDB, RPPlayerDebugLog
 
 #version lua file, generated during build process

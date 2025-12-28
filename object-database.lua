@@ -124,7 +124,7 @@ end
 -- ============================================================================
 
 -- Create an object based on the ITEM_SCHEMA structure
-local function CreateObject(guid, name, icon, tooltip, content, actions, contentTemplate, initialCounter)
+local function CreateObject(guid, name, icon, tooltip, content, actions, contentTemplate, initialCounter, defaultHandoutText)
     -- Validate required fields
     if not name then
         error("Object creation failed: 'name' is required")
@@ -138,7 +138,8 @@ local function CreateObject(guid, name, icon, tooltip, content, actions, content
         content = content or "",
         contentTemplate = contentTemplate or "",
         actions = actions or {},
-        initialCounter = tonumber(initialCounter) or 0
+        initialCounter = tonumber(initialCounter) or 0,
+        defaultHandoutText = defaultHandoutText or "You found this item, check /rpplayer"
     }
 end
 
