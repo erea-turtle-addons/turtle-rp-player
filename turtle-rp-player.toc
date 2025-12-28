@@ -1,8 +1,23 @@
-## Interface: 11200
+﻿## Interface: 11200
 ## Title: RP Player
 ## Notes: Player addon for managing RP quest items inventory
 ## Author: Erea
-## Version: 2025-12-09 15:20
+## Version: 1.0.0
 ## SavedVariablesPerCharacter: RPPlayerDB, RPPlayerDebugLog
 
-RPPlayer.lua
+#version lua file, generated during build process
+version.lua
+
+#common libraries
+logging.lua
+encoding.lua
+messaging.lua
+object-database.lua
+inventory.lua
+rp-business.lua
+rp-actions.lua
+
+#addon code
+player-actions.lua
+rp-player.lua
+minimap-button.lua
