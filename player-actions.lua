@@ -184,18 +184,22 @@ local function HandleCreateObject(item, action, result)
         return
     end
 
-    -- Create instance (minimal data: guid, customText, customNumber, slot)
+    -- Create instance (minimal data: guid, customText, customNumber)
     local instance = inventoryModule.CreateItemInstance(objectGuid, customText, customNumber)
 
-    -- Add to inventory
-    table.insert(RPPlayerDB.inventory, instance)
+    -- Add to inventory (auto-assigns slot)
+    local success, assignedSlot = inventoryModule.AddItemToInventory(RPPlayerDB.inventory, instance)
+    if not success then
+        DEFAULT_CHAT_FRAME:AddMessage("|cFFFF0000[RP Player]|r Failed to add item to inventory", 1, 0, 0)
+        return
+    end
 
     -- Refresh UI
     if RPPlayer_RefreshBag then
         RPPlayer_RefreshBag()
     end
 
-    DEFAULT_CHAT_FRAME:AddMessage("|cFF00FF00[RP Player]|r Created: " .. objectDef.name, 0, 1, 0)
+    -- Silent - no message needed for item creation
 end
 
 -- ============================================================================
@@ -234,7 +238,8 @@ local function HandleUpdateItem(item, action, result)
     if RPPlayer_RefreshBag then
         RPPlayer_RefreshBag()
     end
-    DEFAULT_CHAT_FRAME:AddMessage("|cFF00FF00[RP Player]|r " .. (result.message or "Item updated"), 0, 1, 0)
+
+    -- Silent - no message needed for item updates (charges, etc.)
 end
 
 -- ============================================================================
@@ -287,7 +292,29 @@ local function ExecuteAction(item, action)
     end
 
     -- Dispatch to appropriate handler based on result type
-    if result.result == rpActions.RESULT_TYPES.REQUEST_INPUT then
+    if result.result == "MULTIPLE" then
+        -- Multiple results from sequential methods - process each
+        if result.data and result.data.results then
+            for i = 1, table.getn(result.data.results) do
+                local subResult = result.data.results[i]
+                -- Recursively process each result
+                if subResult.result == rpActions.RESULT_TYPES.CREATE_OBJECT then
+                    HandleCreateObject(item, action, subResult)
+                elseif subResult.result == rpActions.RESULT_TYPES.DESTROY_ITEM then
+                    HandleDestroyItem(item, action, subResult)
+                elseif subResult.result == rpActions.RESULT_TYPES.UPDATE_ITEM then
+                    HandleUpdateItem(item, action, subResult)
+                elseif subResult.result == rpActions.RESULT_TYPES.SUCCESS then
+                    HandleSuccess(item, action, subResult)
+                elseif subResult.result == rpActions.RESULT_TYPES.FAIL then
+                    HandleFail(item, action, subResult)
+                elseif subResult.result == rpActions.RESULT_TYPES.ERROR then
+                    HandleError(item, action, subResult)
+                end
+            end
+        end
+
+    elseif result.result == rpActions.RESULT_TYPES.REQUEST_INPUT then
         HandleRequestInput(item, action, result)
 
     elseif result.result == rpActions.RESULT_TYPES.CREATE_OBJECT then

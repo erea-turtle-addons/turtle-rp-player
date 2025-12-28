@@ -352,14 +352,23 @@ local function ExecuteAction(playerName, item, actionId)
         end
     end
 
-    -- Combine results (last result wins for now - could be more sophisticated)
-    if table.getn(results) > 0 then
-        return results[table.getn(results)]
-    else
+    -- Return results (if multiple, wrap in MULTIPLE array)
+    if table.getn(results) == 0 then
         return {
             result = RESULT_TYPES.SUCCESS,
             message = "Action completed",
             data = {}
+        }
+    elseif table.getn(results) == 1 then
+        return results[1]
+    else
+        -- Multiple results - return array
+        return {
+            result = "MULTIPLE",
+            message = "Multiple actions executed",
+            data = {
+                results = results
+            }
         }
     end
 end

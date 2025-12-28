@@ -559,11 +559,11 @@ end
 
 -- Function: Delete item
 function RPPlayer_DeleteItem(item)
-    Log("DeleteItem called - Item: " .. tostring(item.name))
+    Log("DeleteItem called - Item: " .. tostring(item.name) .. ", Slot: " .. tostring(item.slot))
 
-    -- Remove from inventory
+    -- Remove from inventory by slot (unique identifier for item instances)
     for i, invItem in ipairs(RPPlayerDB.inventory) do
-        if invItem.id == item.id and invItem.guid == item.guid then
+        if invItem.slot == item.slot then
             table.remove(RPPlayerDB.inventory, i)
             break
         end
@@ -1034,9 +1034,9 @@ StaticPopupDialogs["RPPLAYER_MODIFY_CONTENT"] = {
         local result = rpActions.ExecuteAction(playerName, data.item, data.action.id, {newContent = newContent})
 
         if result.result == rpActions.ACTION_RESULTS.SUCCESS then
-            -- Update item content in inventory
+            -- Update item content in inventory by slot (unique identifier)
             for i, invItem in ipairs(RPPlayerDB.inventory) do
-                if invItem.guid == data.item.guid then
+                if invItem.slot == data.item.slot then
                     invItem.content = newContent
                     break
                 end
@@ -1848,12 +1848,12 @@ eventFrame:SetScript("OnEvent", function()  -- Event handler callback
 
             -- Remove pending outgoing trade if exists
             if RPPlayer_PendingOutgoingTrade then
-                -- Remove from inventory
+                -- Remove from inventory by slot (unique identifier)
                 for i, invItem in ipairs(RPPlayerDB.inventory) do
-                    if invItem.id == RPPlayer_PendingOutgoingTrade.id and invItem.guid == RPPlayer_PendingOutgoingTrade.guid then
+                    if invItem.slot == RPPlayer_PendingOutgoingTrade.slot then
                         table.remove(RPPlayerDB.inventory, i)
                         RPPlayer_RefreshBag()
-                        Log("Removed item from inventory after TRADE_ACCEPT")
+                        Log("Removed item from inventory after TRADE_ACCEPT (slot " .. tostring(invItem.slot) .. ")")
                         break
                     end
                 end
