@@ -56,7 +56,8 @@ local playerActions = RequirePlayerActions()
 local ADDON_NAME = "RPPlayer"
 local ADDON_PREFIX = messaging.ADDON_PREFIX  -- Use constant from messaging module
 -- Version info loaded from version.lua (loaded first in .toc)
-local ADDON_VERSION = RP_BUILD_TIME or "unknown"  -- Build timestamp
+-- Show version tag unless it's the default "0.0.0", then show build time
+local ADDON_VERSION = (RP_VERSION_TAG and RP_VERSION_TAG ~= "0.0.0") and RP_VERSION_TAG or (RP_BUILD_TIME or "unknown")
 local MAX_SLOTS = inventory.MAX_INVENTORY_SLOTS  -- Use constant from inventory module
 
 -- NOTE: RegisterAddonMessagePrefix() doesn't exist in WoW 1.12
